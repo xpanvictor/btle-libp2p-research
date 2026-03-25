@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Collect discovered peers
     let mut discovered_peers: Vec<DiscoveredPeer> = Vec::new();
-    let scan_duration = Duration::from_secs(8);
+    let scan_duration = Duration::from_secs(15);
 
     // Run for 10 seconds to discover peers
     let start = std::time::Instant::now();

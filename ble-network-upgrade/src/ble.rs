@@ -6,6 +6,8 @@ use tokio::sync::mpsc;
 
 use crate::apple_ble::BleAdvertiser;
 
+const DEMO_SERVICE_UUID: &str = "a83faf10-9a48-4f55-bc5b-66d91a7c8e11";
+
 /// BLE event types
 #[derive(Debug, Clone)]
 pub enum BleEvent {
@@ -134,7 +136,13 @@ impl BleManager {
 
                 // Only keep devices from this demo's advertiser naming scheme.
                 let local_name = props.local_name.as_deref().unwrap_or_default();
-                if !local_name.starts_with("libp2p-") {
+                let has_demo_name = local_name.starts_with("libp2p-");
+                let has_demo_service = props
+                    .services
+                    .iter()
+                    .any(|uuid| uuid.to_string().eq_ignore_ascii_case(DEMO_SERVICE_UUID));
+
+                if !(has_demo_name || has_demo_service) {
                     continue;
                 }
 
