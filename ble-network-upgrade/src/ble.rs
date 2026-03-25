@@ -6,8 +6,6 @@ use tokio::sync::mpsc;
 
 use crate::apple_ble::BleAdvertiser;
 
-const DEMO_SERVICE_UUID: &str = "a83faf10-9a48-4f55-bc5b-66d91a7c8e11";
-
 /// BLE event types
 #[derive(Debug, Clone)]
 pub enum BleEvent {
@@ -130,23 +128,15 @@ impl BleManager {
         for peripheral in peripherals {
             if let Some(props) = peripheral.properties().await? {
                 let address = props.address.to_string();
-                if address == "00:00:00:00:00:00" {
-                    continue;
-                }
+                let peripheral_id = peripheral.id().to_string();
+                // CoreBluetooth may mask device addresses; keep a stable per-scan key.
+                let key = if address == "00:00:00:00:00:00" {
+                    format!("id:{}", peripheral_id)
+                } else {
+                    address.clone()
+                };
 
-                // Only keep devices from this demo's advertiser naming scheme.
-                let local_name = props.local_name.as_deref().unwrap_or_default();
-                let has_demo_name = local_name.starts_with("libp2p-");
-                let has_demo_service = props
-                    .services
-                    .iter()
-                    .any(|uuid| uuid.to_string().eq_ignore_ascii_case(DEMO_SERVICE_UUID));
-
-                if !(has_demo_name || has_demo_service) {
-                    continue;
-                }
-
-                if self.peripherals.contains_key(&address) {
+                if self.peripherals.contains_key(&key) {
                     continue;
                 }
 
@@ -158,10 +148,16 @@ impl BleManager {
                     .cloned()
                     .unwrap_or_default();
 
-                self.peripherals.insert(address.clone(), peripheral);
+                self.peripherals.insert(key.clone(), peripheral);
+
+                let display_address = if address == "00:00:00:00:00:00" {
+                    key
+                } else {
+                    address
+                };
 
                 return Ok(Some(BleEvent::PeerDiscovered {
-                    address,
+                    address: display_address,
                     rssi,
                     adv_data,
                 }));

@@ -107,13 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if discovered_peers.is_empty() {
         println!(
-            "\n[Error] No compatible BLE peers discovered; aborting transport upgrade.\n"
+            "\n[Warning] No BLE peers were positively identified during the scan window.\n"
         );
         println!(
-            "[Info] Make sure the other node is running this demo and visible as 'libp2p-*'.\n"
+            "[Info] Continuing with upgrade attempt so we can capture MultiPeer diagnostics.\n"
         );
-        ble_manager.stop_advertising();
-        return Ok(());
     }
 
     println!("\n[Discovery Phase Complete] Found {} peer(s)\n", discovered_peers.len());
