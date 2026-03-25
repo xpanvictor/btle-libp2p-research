@@ -1,10 +1,14 @@
 #[cfg(target_os = "macos")]
 mod macos_impl {
     use block2::DynBlock;
+    use objc2::rc::autoreleasepool;
     use objc2::rc::{Allocated, Retained};
     use objc2::runtime::{Bool, ProtocolObject};
     use objc2::{define_class, msg_send, AnyThread, ClassType, DefinedClass};
-    use objc2_foundation::{NSData, NSDictionary, NSError, NSObject, NSObjectProtocol, NSString};
+    use objc2_foundation::{
+        NSDate, NSDefaultRunLoopMode, NSData, NSDictionary, NSError, NSObject, NSObjectProtocol,
+        NSRunLoop, NSString,
+    };
     use objc2_multipeer_connectivity::{
         MCEncryptionPreference, MCNearbyServiceAdvertiser, MCNearbyServiceAdvertiserDelegate,
         MCNearbyServiceBrowser, MCNearbyServiceBrowserDelegate, MCPeerID, MCSession,
@@ -12,6 +16,20 @@ mod macos_impl {
     };
     use std::cell::{Cell, RefCell};
     use std::time::{Duration, Instant};
+
+    fn peer_display_name(peer_id: &MCPeerID) -> String {
+        autoreleasepool(|pool| {
+            let name = unsafe { peer_id.displayName() };
+            unsafe { name.to_str(pool) }.to_string()
+        })
+    }
+
+    fn pump_runloop_slice(seconds: f64) {
+        let run_loop = NSRunLoop::currentRunLoop();
+        let limit = NSDate::dateWithTimeIntervalSinceNow(seconds);
+        let mode = unsafe { &*NSDefaultRunLoopMode };
+        let _ = run_loop.runMode_beforeDate(mode, &limit);
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub enum MultiPeerRole {
@@ -75,11 +93,17 @@ mod macos_impl {
                 peer_id: &MCPeerID,
                 _info: Option<&NSDictionary<NSString, NSString>>,
             ) {
+                println!(
+                    "[MultiPeer] Browser discovered peer '{}'",
+                    peer_display_name(peer_id)
+                );
+
                 if !self.ivars().role_is_initiator.get() {
                     return;
                 }
 
                 if let Some(session) = self.ivars().session.borrow().as_ref() {
+                    println!("[MultiPeer] Sending invitation to discovered peer");
                     unsafe {
                         browser.invitePeer_toSession_withContext_timeout(peer_id, session, None, 10.0);
                     }
@@ -87,7 +111,12 @@ mod macos_impl {
             }
 
             #[unsafe(method(browser:lostPeer:))]
-            fn browser_lost_peer(&self, _browser: &MCNearbyServiceBrowser, _peer_id: &MCPeerID) {}
+            fn browser_lost_peer(&self, _browser: &MCNearbyServiceBrowser, peer_id: &MCPeerID) {
+                println!(
+                    "[MultiPeer] Browser lost peer '{}'",
+                    peer_display_name(peer_id)
+                );
+            }
 
             #[unsafe(method(browser:didNotStartBrowsingForPeers:))]
             fn browser_did_not_start(&self, _browser: &MCNearbyServiceBrowser, error: &NSError) {
@@ -100,10 +129,15 @@ mod macos_impl {
             fn advertiser_did_receive_invitation(
                 &self,
                 _advertiser: &MCNearbyServiceAdvertiser,
-                _peer_id: &MCPeerID,
+                peer_id: &MCPeerID,
                 _context: Option<&NSData>,
                 invitation_handler: &DynBlock<dyn Fn(Bool, *mut MCSession)>,
             ) {
+                println!(
+                    "[MultiPeer] Received invitation from '{}' (accepting)",
+                    peer_display_name(peer_id)
+                );
+
                 let session_ptr = self
                     .ivars()
                     .session
@@ -130,10 +164,15 @@ mod macos_impl {
             fn session_peer_state(
                 &self,
                 _session: &MCSession,
-                _peer_id: &MCPeerID,
+                peer_id: &MCPeerID,
                 state: MCSessionState,
             ) {
                 self.ivars().connected.set(state == MCSessionState::Connected);
+                println!(
+                    "[MultiPeer] Peer '{}' state changed to {:?}",
+                    peer_display_name(peer_id),
+                    state
+                );
             }
 
             #[unsafe(method(session:didReceiveData:fromPeer:))]
@@ -141,8 +180,13 @@ mod macos_impl {
                 &self,
                 _session: &MCSession,
                 data: &NSData,
-                _peer_id: &MCPeerID,
+                peer_id: &MCPeerID,
             ) {
+                println!(
+                    "[MultiPeer] Received {} bytes from '{}'",
+                    data.len(),
+                    peer_display_name(peer_id)
+                );
                 self.ivars().received.borrow_mut().push(data.to_vec());
             }
 
@@ -280,11 +324,15 @@ mod macos_impl {
         ) -> Result<(), Box<dyn std::error::Error>> {
             let start = Instant::now();
             while start.elapsed() < timeout {
+                pump_runloop_slice(0.03);
+
                 let peers = unsafe { self.session.connectedPeers() };
-                if !peers.is_empty() {
+                if !peers.is_empty() || self.delegate.is_connected() {
+                    println!("[MultiPeer] Connected peers: {}", peers.len());
                     return Ok(());
                 }
-                std::thread::sleep(Duration::from_millis(100));
+
+                std::thread::sleep(Duration::from_millis(20));
             }
 
             Err("Timed out waiting for Multipeer connection".into())

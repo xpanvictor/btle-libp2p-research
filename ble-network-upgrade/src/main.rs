@@ -143,8 +143,10 @@ async fn demonstrate_transport_upgrade(
     mp_role: MultiPeerRole,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("┌────────────────────────────────────────────────────────────┐");
-    println!("│  Phase 1: Initial Connection over BLE                      │");
+    println!("│  Phase 1: BLE Discovery + Control Handshake                │");
     println!("└────────────────────────────────────────────────────────────┘\n");
+
+    println!("[BLE] Discovery is real (advertise+scan). Data-channel exchange below is simulated control flow for this demo.\n");
 
     // Simulate exchange of Hello message
     let hello_msg = ProtocolMessage::Hello {
@@ -164,10 +166,15 @@ async fn demonstrate_transport_upgrade(
     println!("  - Message size: {} bytes", msg_bytes.len());
 
     // Simulate small message exchange over BLE
-    println!("\n[BLE Session] Exchanging small messages...");
-    let test_messages = vec!["Hello from Node A", "ACK, capabilities received", "Ready for upgrade"];
+    println!("\n[BLE Session] Exchanging small control messages (simulated transcript)...");
+    let test_messages = vec![
+        ("local", "remote", "Hello from Node A"),
+        ("remote", "local", "ACK, capabilities received"),
+        ("local", "remote", "Ready for upgrade"),
+    ];
 
-    for msg in test_messages {
+    for (from, to, msg) in test_messages {
+        println!("[BLE][Sim][{} -> {}] {}", from, to, msg);
         transport_manager.send_data(msg.as_bytes()).await?;
         drain_and_log_received(transport_manager, "BLE phase").await;
         sleep(Duration::from_millis(500)).await;

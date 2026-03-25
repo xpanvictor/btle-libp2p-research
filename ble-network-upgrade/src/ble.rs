@@ -128,6 +128,16 @@ impl BleManager {
         for peripheral in peripherals {
             if let Some(props) = peripheral.properties().await? {
                 let address = props.address.to_string();
+                if address == "00:00:00:00:00:00" {
+                    continue;
+                }
+
+                // Only keep devices from this demo's advertiser naming scheme.
+                let local_name = props.local_name.as_deref().unwrap_or_default();
+                if !local_name.starts_with("libp2p-") {
+                    continue;
+                }
+
                 if self.peripherals.contains_key(&address) {
                     continue;
                 }
