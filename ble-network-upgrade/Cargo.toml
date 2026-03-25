@@ -1,0 +1,13 @@
+[package]
+name = "ble-network-upgrade"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+futures = "0.3"
+tokio = {version = "1", features = ["full"]}
+libp2p = {version = "0.51"}
+btleplug = "0.12"
+serde = {version = "1.0", features = ["derive"]}
+serde_json = "1.0"
