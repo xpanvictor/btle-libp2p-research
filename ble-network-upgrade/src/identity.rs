@@ -24,11 +24,13 @@ impl NodeIdentity {
 
     /// Get a shorter representation for BLE advertisement (limited to 31 bytes)
     pub fn short_id(&self) -> [u8; 8] {
-        let mut short = [0u8; 8];
-        let peer_bytes = self.peer_id.as_bytes();
-        let copy_len = std::cmp::min(8, peer_bytes.len());
-        short[..copy_len].copy_from_slice(&peer_bytes[..copy_len]);
-        short
+        let mut out = [0u8; 8];
+        for (i, byte) in self.peer_id.as_bytes().iter().copied().enumerate() {
+            // Tiny deterministic hash/fold into 8 bytes for compact BLE payloads.
+            let idx = i % 8;
+            out[idx] = out[idx].wrapping_mul(31).wrapping_add(byte);
+        }
+        out
     }
 }
 

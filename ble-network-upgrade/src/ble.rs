@@ -1,8 +1,10 @@
 /// BLE module - handles Bluetooth Low Energy discovery and connection
-use btleplug::api::{Central, Manager};
+use btleplug::api::{Central, Manager, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager as PlatformManager, Peripheral};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+
+use crate::apple_ble::BleAdvertiser;
 
 /// BLE event types
 #[derive(Debug, Clone)]
@@ -25,6 +27,7 @@ pub struct BleManager {
     peripherals: HashMap<String, Peripheral>,
     event_tx: mpsc::UnboundedSender<BleEvent>,
     event_rx: mpsc::UnboundedReceiver<BleEvent>,
+    advertiser: Option<BleAdvertiser>,
 }
 
 impl BleManager {
@@ -45,13 +48,33 @@ impl BleManager {
             peripherals: HashMap::new(),
             event_tx,
             event_rx,
+            advertiser: None,
         })
+    }
+
+    /// Start BLE advertising as a peripheral (macOS CoreBluetooth backend).
+    pub fn start_advertising(
+        &mut self,
+        short_id: [u8; 8],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let advertiser = BleAdvertiser::start(short_id)?;
+        self.advertiser = Some(advertiser);
+        println!("[BLE] Advertising as peripheral is active");
+        Ok(())
+    }
+
+    /// Stop BLE advertising if active.
+    pub fn stop_advertising(&mut self) {
+        if let Some(advertiser) = &self.advertiser {
+            advertiser.stop();
+        }
+        self.advertiser = None;
     }
 
     /// Start scanning for BLE peripherals
     pub async fn start_scan(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         println!("[BLE] Starting scan for nearby devices...");
-        self.adapter.start_scan(Default::default()).await?;
+        self.adapter.start_scan(ScanFilter::default()).await?;
         Ok(())
     }
 
@@ -64,7 +87,7 @@ impl BleManager {
 
     /// Connect to a peripheral by address
     pub async fn connect(&mut self, address: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let peripheral = self
+        let _peripheral = self
             .peripherals
             .get(address)
             .ok_or(format!("Peripheral {} not found", address))?;
@@ -98,6 +121,33 @@ impl BleManager {
         // Check channel for internally generated events
         if let Ok(event) = self.event_rx.try_recv() {
             return Ok(Some(event));
+        }
+
+        // Pull discoveries from the adapter and emit one event per new address.
+        let peripherals = self.adapter.peripherals().await?;
+        for peripheral in peripherals {
+            if let Some(props) = peripheral.properties().await? {
+                let address = props.address.to_string();
+                if self.peripherals.contains_key(&address) {
+                    continue;
+                }
+
+                let rssi = props.rssi.unwrap_or(-127);
+                let adv_data = props
+                    .manufacturer_data
+                    .values()
+                    .next()
+                    .cloned()
+                    .unwrap_or_default();
+
+                self.peripherals.insert(address.clone(), peripheral);
+
+                return Ok(Some(BleEvent::PeerDiscovered {
+                    address,
+                    rssi,
+                    adv_data,
+                }));
+            }
         }
 
         Ok(None)

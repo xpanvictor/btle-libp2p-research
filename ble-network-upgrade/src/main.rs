@@ -1,17 +1,20 @@
+mod apple_ble;
 mod ble;
 mod identity;
+mod multipeer;
 mod protocol;
 mod transport;
 
 use ble::{BleEvent, BleManager};
 use identity::NodeIdentity;
+use multipeer::MultiPeerRole;
 use protocol::{DiscoveredPeer, ProtocolMessage, TransportCapability};
 use std::time::Duration;
 use tokio::time::sleep;
 use transport::TransportManager;
 
 /// Main demonstration: two BLE devices discover, connect, and upgrade transport
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("╔════════════════════════════════════════════════════════════╗");
     println!("║  BLE -> MultiPeer Connectivity Transport Upgrade Demo      ║");
@@ -36,22 +39,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("[Error] Failed to initialize BLE: {}", e);
             println!("[Info] BLE is only available on macOS with compatible hardware");
             println!("[Info] Simulating BLE behavior for demonstration...\n");
-            return run_simulated_demo(&identity).await;
+            return run_simulated_demo(&identity, MultiPeerRole::Both).await;
         }
     };
 
     // Initialize transport manager
     let transport_manager = TransportManager::new();
 
-    // Start BLE scan
+    let mp_role = MultiPeerRole::Both;
+    println!("[Config] Auto mode: BLE advertise+scan and MultiPeer initiator+responder");
+
+    ble_manager.start_advertising(identity.short_id())?;
     ble_manager.start_scan().await?;
-    println!("[BLE] Scanning for nearby devices...\n");
+    println!("[BLE] Advertising and scanning simultaneously...\n");
 
     // Collect discovered peers
     let mut discovered_peers: Vec<DiscoveredPeer> = Vec::new();
-    let scan_duration = Duration::from_secs(5);
+    let scan_duration = Duration::from_secs(8);
 
-    // Run for 5 seconds to discover peers
+    // Run for 10 seconds to discover peers
     let start = std::time::Instant::now();
     while start.elapsed() < scan_duration {
         match ble_manager.poll_events().await {
@@ -97,28 +103,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if discovered_peers.is_empty() {
         println!(
-            "\n[Info] No peers discovered. Running simulated scenario instead...\n"
+            "\n[Info] No peers discovered during BLE scan. Continuing to transport negotiation...\n"
         );
-        return Ok(());
+        println!(
+            "[Info] For reliable two-Mac discovery use BLE_ROLE=advertise on one node and BLE_ROLE=scan on the other.\n"
+        );
     }
 
     println!("\n[Discovery Phase Complete] Found {} peer(s)\n", discovered_peers.len());
 
     // Demonstrate connection and upgrade flow
-    demonstrate_transport_upgrade(&identity, &transport_manager).await?;
+    demonstrate_transport_upgrade(&identity, &transport_manager, mp_role).await?;
+
+    ble_manager.stop_advertising();
 
     Ok(())
 }
 
 /// Simulated demonstration without actual BLE hardware
-async fn run_simulated_demo(identity: &NodeIdentity) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_simulated_demo(
+    identity: &NodeIdentity,
+    mp_role: MultiPeerRole,
+) -> Result<(), Box<dyn std::error::Error>> {
     let transport_manager = TransportManager::new();
 
     println!("╔════════════════════════════════════════════════════════════╗");
     println!("║             Simulated Transport Upgrade Flow               ║");
     println!("╚════════════════════════════════════════════════════════════╝\n");
 
-    demonstrate_transport_upgrade(identity, &transport_manager).await?;
+    demonstrate_transport_upgrade(identity, &transport_manager, mp_role).await?;
 
     Ok(())
 }
@@ -127,6 +140,7 @@ async fn run_simulated_demo(identity: &NodeIdentity) -> Result<(), Box<dyn std::
 async fn demonstrate_transport_upgrade(
     identity: &NodeIdentity,
     transport_manager: &TransportManager,
+    mp_role: MultiPeerRole,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("┌────────────────────────────────────────────────────────────┐");
     println!("│  Phase 1: Initial Connection over BLE                      │");
@@ -155,6 +169,7 @@ async fn demonstrate_transport_upgrade(
 
     for msg in test_messages {
         transport_manager.send_data(msg.as_bytes()).await?;
+        drain_and_log_received(transport_manager, "BLE phase").await;
         sleep(Duration::from_millis(500)).await;
     }
 
@@ -192,7 +207,12 @@ async fn demonstrate_transport_upgrade(
     println!("│  Phase 3: Transport Switch to MultiPeer Connectivity       │");
     println!("└────────────────────────────────────────────────────────────┘\n");
 
-    transport_manager.upgrade_to_multipeer("peer_node").await?;
+    let display_name = format!("node-{}", &identity.peer_id[0..8]);
+    transport_manager
+        .upgrade_to_multipeer("peer_node", &display_name, mp_role)
+        .await?;
+    sleep(Duration::from_millis(250)).await;
+    drain_and_log_received(transport_manager, "post-upgrade").await;
 
     // Notify about transport switch
     let notifier = ProtocolMessage::TransportSwitchNotifier {
@@ -215,6 +235,8 @@ async fn demonstrate_transport_upgrade(
             .send_data(&vec![0u8; size])
             .await?;
         println!("[MultiPeer] Successfully sent {} bytes: {}", size, msg);
+        sleep(Duration::from_millis(200)).await;
+        drain_and_log_received(transport_manager, "large-data").await;
         sleep(Duration::from_millis(300)).await;
     }
 
@@ -230,6 +252,8 @@ async fn demonstrate_transport_upgrade(
         let heartbeat = ProtocolMessage::Heartbeat;
         transport_manager.send_data(&heartbeat.to_bytes()?).await?;
         println!("[Heartbeat] Keep-alive pulse {} over MultiPeer", i);
+        sleep(Duration::from_millis(150)).await;
+        drain_and_log_received(transport_manager, "heartbeat").await;
         sleep(Duration::from_secs(1)).await;
     }
 
@@ -267,4 +291,19 @@ async fn demonstrate_transport_upgrade(
     println!("╚════════════════════════════════════════════════════════════╝");
 
     Ok(())
+}
+
+async fn drain_and_log_received(transport_manager: &TransportManager, stage: &str) {
+    let frames = transport_manager.drain_received().await;
+    for (idx, frame) in frames.iter().enumerate() {
+        println!("[Recv][{}][{}] {} bytes", stage, idx + 1, frame.len());
+
+        if let Ok(msg) = ProtocolMessage::from_bytes(frame) {
+            println!("  - decoded protocol message: {:?}", msg);
+        } else if let Ok(text) = std::str::from_utf8(frame) {
+            println!("  - utf8 payload: {}", text);
+        } else {
+            println!("  - raw bytes: {:02x?}", frame);
+        }
+    }
 }

@@ -17,6 +17,10 @@ cargo run --release
 cargo run --release
 ```
 
+Both nodes now auto-run in dual mode:
+- BLE: advertise and scan simultaneously.
+- Multipeer: initiator and responder simultaneously.
+
 ## Code Snippets
 
 ### 1. Generate Node Identity
