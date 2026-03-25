@@ -6,7 +6,7 @@ mod macos_impl {
     use objc2::runtime::{Bool, ProtocolObject};
     use objc2::{define_class, msg_send, AnyThread, ClassType, DefinedClass};
     use objc2_foundation::{
-        NSDate, NSDefaultRunLoopMode, NSData, NSDictionary, NSError, NSObject, NSObjectProtocol,
+        NSData, NSDate, NSDefaultRunLoopMode, NSDictionary, NSError, NSObject, NSObjectProtocol,
         NSRunLoop, NSString,
     };
     use objc2_multipeer_connectivity::{
@@ -103,6 +103,12 @@ mod macos_impl {
                 }
 
                 if let Some(session) = self.ivars().session.borrow().as_ref() {
+                    let local_peer = unsafe { session.myPeerID() };
+                    if peer_display_name(peer_id) == peer_display_name(&local_peer) {
+                        println!("[MultiPeer] Ignoring self-like peer discovery entry");
+                        return;
+                    }
+
                     println!("[MultiPeer] Sending invitation to discovered peer");
                     unsafe {
                         browser.invitePeer_toSession_withContext_timeout(peer_id, session, None, 10.0);

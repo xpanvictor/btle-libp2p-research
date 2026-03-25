@@ -13,6 +13,10 @@ use std::time::Duration;
 use tokio::time::sleep;
 use transport::TransportManager;
 
+fn short_hex(id: [u8; 8]) -> String {
+    id.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+}
+
 /// Main demonstration: two BLE devices discover, connect, and upgrade transport
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -103,11 +107,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if discovered_peers.is_empty() {
         println!(
-            "\n[Info] No peers discovered during BLE scan. Continuing to transport negotiation...\n"
+            "\n[Error] No compatible BLE peers discovered; aborting transport upgrade.\n"
         );
         println!(
-            "[Info] For reliable two-Mac discovery use BLE_ROLE=advertise on one node and BLE_ROLE=scan on the other.\n"
+            "[Info] Make sure the other node is running this demo and visible as 'libp2p-*'.\n"
         );
+        ble_manager.stop_advertising();
+        return Ok(());
     }
 
     println!("\n[Discovery Phase Complete] Found {} peer(s)\n", discovered_peers.len());
@@ -202,19 +208,14 @@ async fn demonstrate_transport_upgrade(
     println!("  Messages sent: {:?}\n", upgrade_proposal);
 
     sleep(Duration::from_secs(1)).await;
-
-    let upgrade_accept = ProtocolMessage::AcceptUpgrade {
-        upgrade_token: 0x12345678,
-    };
-
-    println!("[BLE] Received upgrade acceptance");
-    println!("  Message: {:?}\n", upgrade_accept);
+    println!("[BLE] Awaiting acceptance over real BLE data channel is not implemented in this prototype.");
+    println!("[BLE] Proceeding with local policy to attempt MultiPeer upgrade.\n");
 
     println!("┌────────────────────────────────────────────────────────────┐");
     println!("│  Phase 3: Transport Switch to MultiPeer Connectivity       │");
     println!("└────────────────────────────────────────────────────────────┘\n");
 
-    let display_name = format!("node-{}", &identity.peer_id[0..8]);
+    let display_name = format!("node-{}", short_hex(identity.short_id()));
     transport_manager
         .upgrade_to_multipeer("peer_node", &display_name, mp_role)
         .await?;
