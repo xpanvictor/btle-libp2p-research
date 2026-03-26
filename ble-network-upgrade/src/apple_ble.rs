@@ -30,8 +30,8 @@ impl BleAdvertiser {
 
         let keys = unsafe {
             [
-                &*CBAdvertisementDataLocalNameKey,
-                &*CBAdvertisementDataServiceUUIDsKey,
+                CBAdvertisementDataLocalNameKey,
+                CBAdvertisementDataServiceUUIDsKey,
             ]
         };
         let values: [&AnyObject; 2] = [&*local_name, &*uuids];

@@ -27,7 +27,7 @@ mod macos_impl {
     fn pump_runloop_slice(seconds: f64) {
         let run_loop = NSRunLoop::currentRunLoop();
         let limit = NSDate::dateWithTimeIntervalSinceNow(seconds);
-        let mode = unsafe { &*NSDefaultRunLoopMode };
+        let mode = unsafe { NSDefaultRunLoopMode };
         let _ = run_loop.runMode_beforeDate(mode, &limit);
     }
 

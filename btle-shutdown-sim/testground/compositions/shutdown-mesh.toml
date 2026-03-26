@@ -1,0 +1,26 @@
+[metadata]
+name = "btle-shutdown-mesh"
+
+[global]
+plan = "btle-shutdown-mesh"
+case = "shutdown-mesh"
+builder = "docker:go"
+runner = "local:docker"
+
+[global.build]
+selectors = ["all"]
+
+[global.run]
+artifact = ""
+
+[global.run.test_params]
+bridge_ratio = "0.10"
+btle_bandwidth_mbit = "1"
+btle_latency_ms = "75"
+btle_jitter_ms = "25"
+btle_loss_percent = "3.0"
+btle_mtu = "256"
+shutdown_after_ms = "3000"
+publish_after_ms = "5500"
+topic = "headers/v1"
+payload_size = "128"

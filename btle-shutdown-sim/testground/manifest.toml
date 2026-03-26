@@ -1,0 +1,21 @@
+name = "btle-shutdown-mesh"
+
+[defaults]
+builder = "docker:go"
+runner = "local:docker"
+
+[[testcases]]
+name = "shutdown-mesh"
+instances = { min = 50, max = 50, default = 50 }
+
+  [testcases.params]
+  bridge_ratio = { type = "float", unit = "ratio", default = 0.10 }
+  btle_bandwidth_mbit = { type = "int", unit = "Mbit", default = 1 }
+  btle_latency_ms = { type = "int", unit = "ms", default = 75 }
+  btle_jitter_ms = { type = "int", unit = "ms", default = 25 }
+  btle_loss_percent = { type = "float", unit = "percent", default = 3.0 }
+  btle_mtu = { type = "int", unit = "bytes", default = 256 }
+  shutdown_after_ms = { type = "int", unit = "ms", default = 3000 }
+  publish_after_ms = { type = "int", unit = "ms", default = 5500 }
+  topic = { type = "string", default = "headers/v1" }
+  payload_size = { type = "int", unit = "bytes", default = 128 }

@@ -29,7 +29,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let identity = NodeIdentity::generate();
     println!(
         "[Node] Identity generated: {}",
-        identity.peer_id.to_string()[0..8].to_string()
+        &identity.peer_id.to_string()[0..8]
     );
     println!(
         "[Node] Short ID (for BLE advertisement): {:02x?}\n",
