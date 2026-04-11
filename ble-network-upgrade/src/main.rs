@@ -131,6 +131,10 @@ async fn central(close: &mut Receiver<()>) {
 
     let connected_peripherals = central.peripherals().await.unwrap();
     for peripheral in connected_peripherals {
+        println!(
+            "Checking already-connected peripheral: {:?}",
+            peripheral.id()
+        );
         if let Ok(Some(props)) = peripheral.properties().await {
             if props.services.contains(&LP_SERVICE_ID) {
                 println!("Found already-connected node! Proceeding to read...");
