@@ -1,8 +1,11 @@
 use ble_peripheral_rust::gatt::characteristic::Characteristic;
-use ble_peripheral_rust::gatt::peripheral_event::PeripheralEvent;
+use ble_peripheral_rust::gatt::peripheral_event::ReadRequestResponse;
 use ble_peripheral_rust::gatt::service::Service;
 use ble_peripheral_rust::uuid::ShortUuid;
-use ble_peripheral_rust::{Peripheral, PeripheralImpl};
+use ble_peripheral_rust::{
+    gatt::{peripheral_event::PeripheralEvent, properties::CharacteristicProperty},
+    Peripheral, PeripheralImpl,
+};
 use btleplug::api::bleuuid::BleUuid;
 use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Adapter, Manager};
@@ -11,7 +14,7 @@ use libp2p::PeerId;
 use std::any;
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
-use tokio::sync::mpsc::channel;
+use tokio::sync::mpsc::{channel, Sender};
 use tokio::sync::{broadcast, oneshot};
 use tokio::{signal, time};
 use uuid::{uuid, Uuid};
@@ -26,31 +29,33 @@ const LP_SERVICE_ID: Uuid = uuid!("00001234-0000-1000-8000-00805f9b34fb");
 const LP_CHARACTERISTIC_ID: Uuid = uuid!("00005678-0000-1000-8000-00805f9b34fb");
 const LOG_DUR: u64 = 2;
 
-async fn broadcast() -> Peripheral {
+async fn peripheral(p_id: PeerId, close: &mut Receiver<()>) {
+    let mut interval = time::interval(Duration::from_secs(LOG_DUR));
     let (tx, mut rx) = channel::<PeripheralEvent>(256);
     let mut peripheral = Peripheral::new(tx).await.unwrap();
     while !peripheral.is_powered().await.unwrap() {}
     println!("peripheral started {:?}", peripheral.is_advertising().await);
-    peripheral
-        .start_advertising(LP_NAME, &[LP_SERVICE_ID])
-        .await
-        .unwrap();
-    peripheral
-}
 
-async fn peripheral(p_id: PeerId, close: &mut Receiver<()>) {
-    let mut interval = time::interval(Duration::from_secs(LOG_DUR));
-    let mut peripheral = broadcast().await;
     peripheral
         .add_service(&Service {
             uuid: LP_SERVICE_ID,
             primary: true,
             characteristics: vec![Characteristic {
                 uuid: LP_CHARACTERISTIC_ID,
-                value: Some(p_id.to_bytes()),
+                properties: vec![CharacteristicProperty::Read],
                 ..Default::default()
             }],
         })
+        .await
+        .expect("Failed to add service");
+
+    // peripheral
+    //    .update_characteristic(LP_CHARACTERISTIC_ID, p_id.to_bytes())
+    //   .await
+    //    .unwrap();
+
+    peripheral
+        .start_advertising(LP_NAME, &[LP_SERVICE_ID])
         .await
         .unwrap();
     loop {
@@ -61,7 +66,26 @@ async fn peripheral(p_id: PeerId, close: &mut Receiver<()>) {
             }
             _ = interval.tick() => {
                 println!("Peer {} advertising: {:?}", p_id, peripheral.is_advertising().await)
-                // scan().await;
+            }
+            Some(ev) = rx.recv() => {
+                if let PeripheralEvent::ReadRequest { request, responder, offset } = ev {
+                    println!("Received read request for characteristic: {:?}", request.characteristic);
+                    if request.characteristic == LP_CHARACTERISTIC_ID {
+                        let data = p_id.to_bytes();
+                        responder.send(ReadRequestResponse{
+                            value: p_id.to_bytes(),
+                            response: ble_peripheral_rust::gatt::peripheral_event::RequestResponse::Success
+                        }).unwrap();
+                    } else {
+                        eprintln!("Unknown characteristic read request: {:?}", request.characteristic);
+                        responder.send(ReadRequestResponse{
+                            value: vec![],
+                            response: ble_peripheral_rust::gatt::peripheral_event::RequestResponse::InvalidHandle
+                        }).unwrap();
+                    }
+                } else {
+                    println!("Received peripheral event: {:?}", ev);
+                }
             }
         }
     }
@@ -82,12 +106,12 @@ async fn retrieve_id(
     if let Some(characteristic) = cmd_char {
         let data = peripheral.read(characteristic).await?;
 
-        // 5. Convert bytes back to PeerId
         match PeerId::from_bytes(&data) {
             Ok(peer_id) => println!("Successfully discovered PeerID: {}", peer_id),
             Err(e) => eprintln!("Failed to parse PeerID: {:?}", e),
         }
     }
+    peripheral.disconnect().await.expect("couldn't disconnect");
     Ok(())
 }
 
@@ -118,7 +142,7 @@ async fn central(close: &mut Receiver<()>) {
                                 println!("-- RSSI: {:?}", properties.rssi);
                                 println!("-- Manufacturer data: {:?}", properties.manufacturer_data);
                                 println!("connecting...");
-                                retrieve_id(peripheral).await;
+                                retrieve_id(peripheral).await.expect("Failed to retrieve PeerID");
                             }
                         }
                     }
