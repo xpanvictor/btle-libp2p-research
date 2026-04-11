@@ -123,11 +123,22 @@ async fn central(close: &mut Receiver<()>) {
 
     central
         .start_scan(ScanFilter {
-            ..Default::default()
+            services: vec![LP_SERVICE_ID],
         })
         .await
         .unwrap();
     let mut central_events = central.events().await.unwrap();
+
+    let connected_peripherals = central.peripherals().await.unwrap();
+    for peripheral in connected_peripherals {
+        if let Ok(Some(props)) = peripheral.properties().await {
+            if props.services.contains(&LP_SERVICE_ID) {
+                println!("Found already-connected node! Proceeding to read...");
+                peripheral.disconnect().await.expect("couldn't disconnect");
+                // Trigger your read logic here
+            }
+        }
+    }
     loop {
         tokio::select! {
             Some(ev) = central_events.next() => {
