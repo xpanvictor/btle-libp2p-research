@@ -123,7 +123,7 @@ async fn central(close: &mut Receiver<()>) {
 
     central
         .start_scan(ScanFilter {
-            services: vec![LP_SERVICE_ID],
+            ..Default::default()
         })
         .await
         .unwrap();
