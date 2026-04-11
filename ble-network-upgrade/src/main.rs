@@ -1,315 +1,120 @@
-mod apple_ble;
-mod ble;
-mod identity;
-mod multipeer;
-mod protocol;
-mod transport;
-
-use ble::{BleEvent, BleManager};
-use identity::NodeIdentity;
-use multipeer::MultiPeerRole;
-use protocol::{DiscoveredPeer, ProtocolMessage, TransportCapability};
+use ble_peripheral_rust::gatt::peripheral_event::PeripheralEvent;
+use ble_peripheral_rust::uuid::ShortUuid;
+use ble_peripheral_rust::{Peripheral, PeripheralImpl};
+use btleplug::api::{Central, CentralEvent, Manager as _, Peripheral as _, ScanFilter};
+use btleplug::platform::{Adapter, Manager};
+use futures::StreamExt;
+use std::any;
 use std::time::Duration;
-use tokio::time::sleep;
-use transport::TransportManager;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::mpsc::channel;
+use tokio::sync::{broadcast, oneshot};
+use tokio::{signal, time};
+use uuid::{uuid, Uuid};
 
-fn short_hex(id: [u8; 8]) -> String {
-    id.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+fn generate_advertisement_data(peer_id: &str) -> &str {
+    peer_id
 }
 
-/// Main demonstration: two BLE devices discover, connect, and upgrade transport
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  BLE -> MultiPeer Connectivity Transport Upgrade Demo      ║");
-    println!("║  Demonstrating why BLE spec is needed in libp2p            ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
+const LP_NAME: &str = "libp2p-node";
+const LP_SERVICE_ID: Uuid = uuid!("00001234-0000-1000-8000-00805f9b34fb");
+const LOG_DUR: u64 = 2;
 
-    // Generate node identity
-    let identity = NodeIdentity::generate();
-    println!(
-        "[Node] Identity generated: {}",
-        &identity.peer_id.to_string()[0..8]
-    );
-    println!(
-        "[Node] Short ID (for BLE advertisement): {:02x?}\n",
-        identity.short_id()
-    );
+async fn broadcast() -> Peripheral {
+    let (tx, mut rx) = channel::<PeripheralEvent>(256);
+    let mut peripheral = Peripheral::new(tx).await.unwrap();
+    while !peripheral.is_powered().await.unwrap() {}
+    println!("peripheral started {:?}", peripheral.is_advertising().await);
+    peripheral
+        .start_advertising(LP_NAME, &[LP_SERVICE_ID])
+        .await
+        .unwrap();
+    peripheral
+}
 
-    // Initialize BLE manager
-    let mut ble_manager = match BleManager::new().await {
-        Ok(mgr) => mgr,
-        Err(e) => {
-            println!("[Error] Failed to initialize BLE: {}", e);
-            println!("[Info] BLE is only available on macOS with compatible hardware");
-            println!("[Info] Simulating BLE behavior for demonstration...\n");
-            return run_simulated_demo(&identity, MultiPeerRole::Both).await;
+async fn find_node(central: &Adapter) -> Option<btleplug::platform::Peripheral> {
+    let peripherals = central.peripherals().await.unwrap();
+    for peripheral in peripherals {
+        let properties = peripheral.properties().await.unwrap();
+        if let Some(properties) = properties {
+            if properties.local_name == Some(LP_NAME.to_string()) {
+                return Some(peripheral);
+            }
         }
-    };
+    }
+    None
+}
 
-    // Initialize transport manager
-    let transport_manager = TransportManager::new();
+async fn peripheral(close: &mut Receiver<()>) {
+    let mut interval = time::interval(Duration::from_secs(LOG_DUR));
+    let mut peripheral = broadcast().await;
+    loop {
+        tokio::select! {
+            _ = close.recv() => {
+                println!("Received Ctrl+C, shutting down...");
+                break;
+            }
+            _ = interval.tick() => {
+                println!("peripheral advertising: {:?}", peripheral.is_advertising().await);
+                // scan().await;
+            }
+        }
+    }
+}
 
-    let mp_role = MultiPeerRole::Both;
-    println!("[Config] Auto mode: BLE advertise+scan and MultiPeer initiator+responder");
+async fn central(close: &mut Receiver<()>) {
+    let mut interval = time::interval(Duration::from_secs(LOG_DUR));
+    let manager = Manager::new().await.unwrap();
+    let adapter = manager.adapters().await.unwrap();
+    let central = adapter.iter().nth(0).unwrap();
 
-    ble_manager.start_advertising(identity.short_id())?;
-    ble_manager.start_scan().await?;
-    println!("[BLE] Advertising and scanning simultaneously...\n");
-
-    // Collect discovered peers
-    let mut discovered_peers: Vec<DiscoveredPeer> = Vec::new();
-    let scan_duration = Duration::from_secs(15);
-
-    // Run for 10 seconds to discover peers
-    let start = std::time::Instant::now();
-    while start.elapsed() < scan_duration {
-        match ble_manager.poll_events().await {
-            Ok(Some(event)) => {
-                match event {
-                    BleEvent::PeerDiscovered {
-                        address,
-                        rssi,
-                        adv_data: _,
-                    } => {
-                        println!(
-                            "[Discovery] Found peer: {} (RSSI: {} dBm)",
-                            address, rssi
-                        );
-                        discovered_peers.push(DiscoveredPeer {
-                            peer_id_short: identity.short_id(),
-                            capabilities: vec![
-                                TransportCapability::Ble,
-                                TransportCapability::MultiPeerConnectivity,
-                            ],
-                            max_message_size: 512,
-                            is_connected: false,
-                        });
-                    }
-                    BleEvent::PeerConnected { address } => {
-                        println!("[Connection] Successfully connected to: {}", address);
-                    }
-                    BleEvent::PeerDisconnected { address } => {
-                        println!("[Disconnection] Lost connection to: {}", address);
-                    }
+    central
+        .start_scan(ScanFilter {
+            services: vec![LP_SERVICE_ID],
+        })
+        .await
+        .unwrap();
+    let mut central_events = central.events().await.unwrap();
+    loop {
+        tokio::select! {
+            Some(ev) = central_events.next() => {
+                if let CentralEvent::DeviceDiscovered(p_id) = ev {
+                    println!("Device discovered: {:?}", p_id);
                 }
             }
-            Ok(None) => {
-                sleep(Duration::from_millis(100)).await;
+            _ = interval.tick() => {
+                println!("central on");
             }
-            Err(e) => {
-                println!("[Warning] Error polling BLE events: {}", e);
-            }
+            _ = close.recv() => break
         }
     }
-
-    ble_manager.stop_scan().await?;
-
-    if discovered_peers.is_empty() {
-        println!(
-            "\n[Warning] No BLE peers were positively identified during the scan window.\n"
-        );
-        println!(
-            "[Info] Continuing with upgrade attempt so we can capture MultiPeer diagnostics.\n"
-        );
-    }
-
-    println!("\n[Discovery Phase Complete] Found {} peer(s)\n", discovered_peers.len());
-
-    // Demonstrate connection and upgrade flow
-    demonstrate_transport_upgrade(&identity, &transport_manager, mp_role).await?;
-
-    ble_manager.stop_advertising();
-
-    Ok(())
 }
 
-/// Simulated demonstration without actual BLE hardware
-async fn run_simulated_demo(
-    identity: &NodeIdentity,
-    mp_role: MultiPeerRole,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let transport_manager = TransportManager::new();
+#[tokio::main]
+async fn main() {
+    // extract out role from args
+    let (tx, _rx) = broadcast::channel::<()>(1);
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 {
+        let role = &args[1];
 
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║             Simulated Transport Upgrade Flow               ║");
-    println!("╚════════════════════════════════════════════════════════════╝\n");
-
-    demonstrate_transport_upgrade(identity, &transport_manager, mp_role).await?;
-
-    Ok(())
-}
-
-/// Demonstrate the transport upgrade flow
-async fn demonstrate_transport_upgrade(
-    identity: &NodeIdentity,
-    transport_manager: &TransportManager,
-    mp_role: MultiPeerRole,
-) -> Result<(), Box<dyn std::error::Error>> {
-    println!("┌────────────────────────────────────────────────────────────┐");
-    println!("│  Phase 1: BLE Discovery + Control Handshake                │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-
-    println!("[BLE] Discovery is real (advertise+scan). Data-channel exchange below is simulated control flow for this demo.\n");
-
-    // Simulate exchange of Hello message
-    let hello_msg = ProtocolMessage::Hello {
-        peer_id_short: identity.short_id(),
-        capabilities: vec![
-            TransportCapability::Ble,
-            TransportCapability::MultiPeerConnectivity,
-        ],
-        max_message_size: 512,
-    };
-
-    println!("[BLE] Sending Hello message with capabilities...");
-    println!("  - Transport: BLE");
-    println!("  - Capabilities: {:?}", hello_msg);
-
-    let msg_bytes = hello_msg.to_bytes()?;
-    println!("  - Message size: {} bytes", msg_bytes.len());
-
-    // Simulate small message exchange over BLE
-    println!("\n[BLE Session] Exchanging small control messages (simulated transcript)...");
-    let test_messages = vec![
-        ("local", "remote", "Hello from Node A"),
-        ("remote", "local", "ACK, capabilities received"),
-        ("local", "remote", "Ready for upgrade"),
-    ];
-
-    for (from, to, msg) in test_messages {
-        println!("[BLE][Sim][{} -> {}] {}", from, to, msg);
-        transport_manager.send_data(msg.as_bytes()).await?;
-        drain_and_log_received(transport_manager, "BLE phase").await;
-        sleep(Duration::from_millis(500)).await;
-    }
-
-    println!("\n┌────────────────────────────────────────────────────────────┐");
-    println!("│  Phase 2: Capability Negotiation                           │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-
-    println!("[Negotiation] Both peers support MultiPeer Connectivity");
-    println!("[Negotiation] Advantages of MultiPeer over BLE:");
-    println!("  ✓ Higher bandwidth (faster data transfer)");
-    println!("  ✓ More stable connection");
-    println!("  ✓ Better for larger payloads");
-    println!("  ✓ Lower latency");
-    println!("  ✗ Only available on Apple platforms");
-    println!("  ✗ Requires BLE as fallback mechanism\n");
-
-    let upgrade_proposal = ProtocolMessage::ProposeUpgrade {
-        proposed_transport: TransportCapability::MultiPeerConnectivity,
-        upgrade_token: 0x12345678,
-    };
-
-    println!("[BLE] Proposing transport upgrade...");
-    println!("  Messages sent: {:?}\n", upgrade_proposal);
-
-    sleep(Duration::from_secs(1)).await;
-    println!("[BLE] Awaiting acceptance over real BLE data channel is not implemented in this prototype.");
-    println!("[BLE] Proceeding with local policy to attempt MultiPeer upgrade.\n");
-
-    println!("┌────────────────────────────────────────────────────────────┐");
-    println!("│  Phase 3: Transport Switch to MultiPeer Connectivity       │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-
-    let display_name = format!("node-{}", short_hex(identity.short_id()));
-    transport_manager
-        .upgrade_to_multipeer("peer_node", &display_name, mp_role)
-        .await?;
-    sleep(Duration::from_millis(250)).await;
-    drain_and_log_received(transport_manager, "post-upgrade").await;
-
-    // Notify about transport switch
-    let notifier = ProtocolMessage::TransportSwitchNotifier {
-        new_transport: TransportCapability::MultiPeerConnectivity,
-    };
-    println!("[Notification] {:?}\n", notifier);
-
-    println!("┌────────────────────────────────────────────────────────────┐");
-    println!("│  Phase 4: Communication over MultiPeer Connectivity        │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-
-    let large_messages = vec![
-        ("Larger payload part 1", 256),
-        ("Larger payload part 2 with more data", 512),
-        ("Large file chunk", 1024),
-    ];
-
-    for (msg, size) in large_messages {
-        transport_manager
-            .send_data(&vec![0u8; size])
-            .await?;
-        println!("[MultiPeer] Successfully sent {} bytes: {}", size, msg);
-        sleep(Duration::from_millis(200)).await;
-        drain_and_log_received(transport_manager, "large-data").await;
-        sleep(Duration::from_millis(300)).await;
-    }
-
-    println!("\n┌────────────────────────────────────────────────────────────┐");
-    println!("│  Phase 5: Connection Resilience                            │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-
-    println!("[Resilience] MultiPeer connection active");
-    println!("[Resilience] BLE connection is kept as fallback");
-
-    // Simulate heartbeat to keep connection alive
-    for i in 1..=3 {
-        let heartbeat = ProtocolMessage::Heartbeat;
-        transport_manager.send_data(&heartbeat.to_bytes()?).await?;
-        println!("[Heartbeat] Keep-alive pulse {} over MultiPeer", i);
-        sleep(Duration::from_millis(150)).await;
-        drain_and_log_received(transport_manager, "heartbeat").await;
-        sleep(Duration::from_secs(1)).await;
-    }
-
-    println!("\n┌────────────────────────────────────────────────────────────┐");
-    println!("│  Summary: Why BLE Spec is Important for libp2p            │");
-    println!("└────────────────────────────────────────────────────────────┘\n");
-
-    println!("1. **Discovery Mechanism**");
-    println!("   - BLE provides efficient peer discovery in local networks");
-    println!("   - Works with limited advertisement payload (31 bytes)");
-    println!("   - Energy efficient scanning\n");
-
-    println!("2. **Initial Bootstrap**");
-    println!("   - Not all peers support advanced transports");
-    println!("   - BLE is nearly universal on modern devices");
-    println!("   - Enables initial identity exchange and capability discovery\n");
-
-    println!("3. **Transport Negotiation**");
-    println!("   - BLE spec allows defining capability exchange protocol");
-    println!("   - Peers can negotiate best available transport");
-    println!("   - Graceful fallback when upgrades fail\n");
-
-    println!("4. **Connectivity Resilience**");
-    println!("   - Maintains BLE as fallback transport");
-    println!("   - Handles transient network failures");
-    println!("   - Enables multi-path communication\n");
-
-    println!("5. **Cross-Platform Compatibility**");
-    println!("   - BLE works on all major platforms");
-    println!("   - Platform-specific optimizations (like MultiPeer) enhance performance");
-    println!("   - Unified interface across heterogeneous networks\n");
-
-    println!("╔════════════════════════════════════════════════════════════╗");
-    println!("║  Demo Complete: Transport Upgrade Flow Validated           ║");
-    println!("╚════════════════════════════════════════════════════════════╝");
-
-    Ok(())
-}
-
-async fn drain_and_log_received(transport_manager: &TransportManager, stage: &str) {
-    let frames = transport_manager.drain_received().await;
-    for (idx, frame) in frames.iter().enumerate() {
-        println!("[Recv][{}][{}] {} bytes", stage, idx + 1, frame.len());
-
-        if let Ok(msg) = ProtocolMessage::from_bytes(frame) {
-            println!("  - decoded protocol message: {:?}", msg);
-        } else if let Ok(text) = std::str::from_utf8(frame) {
-            println!("  - utf8 payload: {}", text);
-        } else {
-            println!("  - raw bytes: {:02x?}", frame);
+        if matches!(role.as_str(), "peripheral" | "central") {
+            if role == "peripheral" {
+                println!("Running as advertiser");
+                peripheral(&mut tx.subscribe()).await;
+            } else {
+                println!("Running as scanner");
+                central(&mut tx.subscribe()).await;
+            }
+            tokio::select! {
+               _ = signal::ctrl_c() => {
+                   println!("Received Ctrl+C, shutting down...");
+                   tx.send(()).unwrap();
+               }
+            }
         }
+        eprintln!("Invalid role specified {}", role);
+    } else {
+        eprintln!("Need a role - peripheral or central")
     }
 }

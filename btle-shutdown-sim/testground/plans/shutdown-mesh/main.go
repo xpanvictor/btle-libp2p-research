@@ -11,12 +11,12 @@ import (
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	runtime "github.com/testground/sdk-go/runtime"
 	"github.com/testground/sdk-go/run"
+	runtime "github.com/testground/sdk-go/runtime"
 )
 
 type config struct {
