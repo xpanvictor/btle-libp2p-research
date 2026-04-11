@@ -12,6 +12,7 @@ use btleplug::platform::{Adapter, Manager};
 use futures::StreamExt;
 use libp2p::PeerId;
 use std::any;
+use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::mpsc::{channel, Sender};
@@ -24,7 +25,7 @@ fn generate_identity() -> PeerId {
     PeerId::from(key.public())
 }
 
-const LP_NAME: &str = "libp2p-node";
+const LP_NAME: &str = "libp2p-node-ex";
 const LP_SERVICE_ID: Uuid = uuid!("00001234-0000-1000-8000-00805f9b34fb");
 const LP_CHARACTERISTIC_ID: Uuid = uuid!("00005678-0000-1000-8000-00805f9b34fb");
 const LOG_DUR: u64 = 2;
@@ -48,11 +49,6 @@ async fn peripheral(p_id: PeerId, close: &mut Receiver<()>) {
         })
         .await
         .expect("Failed to add service");
-
-    // peripheral
-    //    .update_characteristic(LP_CHARACTERISTIC_ID, p_id.to_bytes())
-    //   .await
-    //    .unwrap();
 
     peripheral
         .start_advertising(LP_NAME, &[LP_SERVICE_ID])
@@ -93,7 +89,7 @@ async fn peripheral(p_id: PeerId, close: &mut Receiver<()>) {
 
 async fn retrieve_id(
     peripheral: btleplug::platform::Peripheral,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<PeerId, Box<dyn std::error::Error>> {
     // connect first
     if let Err(e) = peripheral.connect().await {
         eprintln!("Failed to connect to peripheral: {:?}", e);
@@ -103,16 +99,21 @@ async fn retrieve_id(
     let chars = peripheral.characteristics();
     let cmd_char = chars.iter().find(|c| c.uuid == LP_CHARACTERISTIC_ID);
 
+    let mut peer_id: Option<PeerId> = None;
+
     if let Some(characteristic) = cmd_char {
         let data = peripheral.read(characteristic).await?;
 
         match PeerId::from_bytes(&data) {
-            Ok(peer_id) => println!("Successfully discovered PeerID: {}", peer_id),
+            Ok(pid) => {
+                peer_id = Some(pid);
+            }
             Err(e) => eprintln!("Failed to parse PeerID: {:?}", e),
         }
     }
     peripheral.disconnect().await.expect("couldn't disconnect");
-    Ok(())
+
+    peer_id.ok_or_else(|| "PeerID not found in characteristic".into())
 }
 
 async fn central(close: &mut Receiver<()>) {
@@ -121,27 +122,22 @@ async fn central(close: &mut Receiver<()>) {
     let adapter = manager.adapters().await.unwrap();
     let central = adapter.iter().nth(0).unwrap();
 
-    central.start_scan(ScanFilter::default()).await.unwrap();
+    central
+        .start_scan(ScanFilter {
+            services: vec![LP_SERVICE_ID],
+        })
+        .await
+        .unwrap();
     let mut central_events = central.events().await.unwrap();
+    let mut found_nodes = HashMap::new();
 
-    // -- debug logic...
-    let connected_peripherals = central.peripherals().await.unwrap();
-    for peripheral in connected_peripherals {
-        println!(
-            "Checking already-connected peripheral: {:?}",
-            peripheral.id()
-        );
-        if let Ok(Some(props)) = peripheral.properties().await {
-            if props.services.contains(&LP_SERVICE_ID) {
-                println!("Found already-connected node! Proceeding to read...");
-                peripheral.disconnect().await.expect("couldn't disconnect");
-            }
-        }
-    }
     loop {
         tokio::select! {
             Some(ev) = central_events.next() => {
                 if let CentralEvent::DeviceDiscovered(p_id) | CentralEvent::DeviceUpdated(p_id) = ev {
+                    if found_nodes.contains_key(&p_id) {
+                        continue;
+                    }
                     println!("Device discovered: {:?}", p_id);
                     if let Ok(peripheral) = central.peripheral(&p_id).await {
                         if let Some(properties) = peripheral.properties().await.unwrap() {
@@ -152,7 +148,9 @@ async fn central(close: &mut Receiver<()>) {
                                 println!("-- RSSI: {:?}", properties.rssi);
                                 println!("-- Manufacturer data: {:?}", properties.manufacturer_data);
                                 println!("connecting...");
-                                retrieve_id(peripheral).await.expect("Failed to retrieve PeerID");
+                                let peer_id = retrieve_id(peripheral).await.expect("Failed to retrieve PeerID");
+                                println!("Retrieved PeerID: {}", peer_id);
+                                found_nodes.insert(p_id, peer_id);
                             }
                         }
                     }
